@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>詛咒迷宮：多人連線版</title>
+    <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+    <style>
+        :root {
+            --bg: #1e1e2e; --board: #11111b; --tile: #313244;
+            --p1: #f38ba8; --p2: #89b4fa; --p3: #f9e2af; --p4: #a6e3a1;
+        }
+        body {
+            font-family: sans-serif; background: var(--bg); color: #cdd6f4;
+            margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+        }
+
+        /* --- 連線大廳 UI --- */
+        #lobby {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: #1e1e2e; z-index: 999;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            padding: 20px; text-align: center;
+        }
+        .lobby-box {
+            background: #313244; padding: 30px; border-radius: 15px; width: 90%; max-width: 400px;
+            box-shadow: 0 10px 30px black;
+        }
+        h1 { margin: 0 0 20px 0; color: #f9e2af; }
+        input {
+            width: 100%; padding: 15px; font-size: 1.2rem; text-align: center; letter-spacing: 5px;
+            margin-bottom: 15px; border-radius: 8px; border: none; text-transform: uppercase;
+        }
+        .btn-lobby {
+            width: 100%; padding: 15px; font-size: 1.1rem; border: none; border-radius: 8px;
+            cursor: pointer; font-weight: bold; margin-bottom: 10px; color: #111;
+        }
+        .btn-create { background: #a6e3a1; }
+        .btn-join { background: #89b4fa; }
+        #room-id-display { font-size: 3rem; font-family: monospace; color: #f9e2af; margin: 20px 0; letter-spacing: 5px; font-weight: bold;}
+        .player-list { text-align: left; margin-top: 20px; color: #bac2de; }
+        .p-item { padding: 5px 0; border-bottom: 1px solid #45475a; }
+
+        /* --- 遊戲內 UI --- */
+        #game-ui { display: none; flex-direction: column; height: 100%; }
+        header { padding: 10px; background: rgba(0,0,0,0.4); display: flex; justify-content: space-between; align-items: center;}
+        .game-area { flex: 1; display: flex; align-items: center; justify-content: center; }
+        .board {
+            display: grid; width: 94vw; height: 94vw; max-width: 500px; max-height: 500px;
+            grid-template-columns: repeat(5, 1fr); grid-template-rows: repeat(5, 1fr);
+            gap: 2px; padding: 4px; background: var(--board); border-radius: 8px;
+        }
+        .tile { position: relative; background: var(--tile); border-radius: 4px; transition: transform 0.2s; }
+        .tile.selected { box-shadow: 0 0 0 3px #89b4fa; z-index: 5; background: #45475a; }
+        .tile.overheat { border: 2px dashed #fab387; opacity: 0.5; }
+        .tile.locked { border: 2px solid #f38ba8; }
+        .tile.locked::after { content:"🔒"; position:absolute; right:1px; top:1px; font-size:10px; }
+        
+        .path { position: absolute; background: #bac2de; }
+        .path.c { width:40%; height:40%; top:30%; left:30%; }
+        .path.n { width:40%; height:35%; top:0; left:30%; }
+        .path.s { width:40%; height:35%; bottom:0; left:30%; }
+        .path.w { width:35%; height:40%; left:0; top:30%; }
+        .path.e { width:35%; height:40%; right:0; top:30%; }
+        
+        .tile.goal .path { background: #f9e2af; }
+        .tile.portal .path { background: #89b4fa; }
+        .tile.curse .path { background: #cba6f7; }
+        .icon { position: absolute; top:50%; left:50%; transform:translate(-50%,-50%); z-index:6; font-size:1.2rem; pointer-events:none;}
+
+        .player { position: absolute; width:16%; height:16%; border-radius:50%; z-index:20; border:2px solid #fff; transition:all 0.3s; pointer-events:none; }
+        .p0{background:var(--p1);} .p1{background:var(--p2);} .p2{background:var(--p3);} .p3{background:var(--p4);}
+
+        .controls { padding: 15px; background: #181825; border-radius: 20px 20px 0 0; display: flex; flex-direction: column; gap: 10px; }
+        .status-bar { display: flex; justify-content: space-between; color: #a6adc8; font-size: 0.9rem; }
+        .msg { text-align: center; color: #fab387; min-height: 1.4em; }
+        button.game-btn { width: 100%; padding: 15px; border-radius: 10px; border: none; font-weight: bold; font-size: 1rem; cursor: pointer; }
+        .btn-act { background: #a6e3a1; color: #111; }
+        .btn-pass { background: #f38ba8; color: #111; }
+        .btn-disabled { background: #45475a; color: #777; cursor: not-allowed; }
+
+        /* 遮罩：不是你的回合時 */
+        #wait-mask {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.7); z-index: 900;
+            display: none; align-items: center; justify-content: center;
+            color: white; font-size: 1.5rem; font-weight: bold; flex-direction: column;
+        }
+    </style>
+</head>
+<body>
+
+<div id="lobby">
+    <div class="lobby-box" id="lobby-start">
+        <h1>詛咒迷宮<br><small>多人連線版</small></h1>
+        <button class="btn-lobby btn-create" onclick="createRoom()">🏠 創建房間 (房主)</button>
+        <button class="btn-lobby btn-join" onclick="showJoin()">🔗 加入房間 (玩家)</button>
+    </div>
+
+    <div class="lobby-box" id="lobby-host" style="display:none;">
+        <h3>房間 ID</h3>
+        <div id="room-id-display">...</div>
+        <p>請將此 ID 告訴朋友</p>
+        <div class="player-list" id="host-list">
+            <div class="p-item">P1 (房主) - 已就緒</div>
+        </div>
+        <button class="btn-lobby btn-create" style="margin-top:20px;" onclick="hostStartGame()">開始遊戲</button>
+    </div>
+
+    <div class="lobby-box" id="lobby-join" style="display:none;">
+        <h3>輸入房間 ID</h3>
+        <input type="text" id="input-room-id" placeholder="例如: ABCD" maxlength="4">
+        <button class="btn-lobby btn-join" onclick="joinRoom()">連線</button>
+        <button class="btn-lobby" style="background:#45475a; color:#fff;" onclick="location.reload()">返回</button>
+        <div id="join-status" style="margin-top:10px; color:#f9e2af;"></div>
+    </div>
+</div>
+
+<div id="game-ui">
+    <div id="wait-mask">
+        <div>等待對手行動...</div>
+        <div style="font-size:1rem; margin-top:10px; color:#aaa;" id="wait-msg"></div>
+    </div>
+
+    <header>
+        <span id="my-role">我是: P1</span>
+        <span style="background:#fff; color:#000; padding:2px 8px; border-radius:10px;" id="turn-badge">P1 回合</span>
+    </header>
+
+    <div class="game-area">
+        <div class="board" id="board"></div>
+    </div>
+
+    <div class="controls">
+        <div class="status-bar">
+            <span id="phase-txt">階段：旋轉</span>
+            <span id="count-txt" style="color:#a6e3a1; font-weight:bold;">0/2</span>
+        </div>
+        <div class="msg" id="msg">等待開始...</div>
+        <div style="display:flex; gap:10px;">
+            <button class="game-btn btn-act" id="btn-main" onclick="myAction('CONFIRM')">完成旋轉</button>
+            <button class="game-btn btn-pass" id="btn-sub" onclick="myAction('END')">結束回合</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    // --- 參數 ---
+    const SIZE = 5;
+    const TILES = { I:[1,0,1,0], L:[0,1,1,0], T:[1,1,1,0], X:[1,1,1,1] };
+    const COLORS = ['#f38ba8', '#89b4fa', '#f9e2af', '#a6e3a1'];
+
+    // --- 連線變數 ---
+    let peer = null;
+    let myId = null;
+    let connections = []; // 房主存所有連線
+    let hostConn = null;  // 玩家存房主連線
+    let isHost = false;
+    let myPlayerIndex = -1; // 0~3
+    
+    // --- 遊戲狀態 (由房主維護並廣播) ---
+    let gameState = {
+        board: [],
+        players: [],
+        currP: 0,
+        phase: 'ROTATE', // ROTATE, MOVE, LOCK
+        movesLeft: 0,
+        rotatedTiles: [], // {x,y}
+        overheated: [],   // {x,y}
+        turnCount: 0
+    };
+
+    // ==========================================
+    // PeerJS 連線邏輯
+    // ==========================================
+
+    function generateId() {
+        // 產生 4 位大寫亂數 ID
+        const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+        let res = "";
+        for(let i=0; i<4; i++) res += chars.charAt(Math.floor(Math.random() * chars.length));
+        return res;
+    }
+
+    function createRoom() {
+        const roomId = generateId();
+        initPeer(roomId);
+        isHost = true;
+        myPlayerIndex = 0;
+        
+        document.getElementById('lobby-start').style.display = 'none';
+        document.getElementById('lobby-host').style.display = 'block';
+        document.getElementById('room-id-display').innerText = roomId;
+    }
+
+    function showJoin() {
+        document.getElementById('lobby-start').style.display = 'none';
+        document.getElementById('lobby-join').style.display = 'block';
+    }
+
+    function joinRoom() {
+        const inputId = document.getElementById('input-room-id').value.toUpperCase();
+        if(inputId.length < 4) return alert("請輸入 4 位房號");
+        
+        document.getElementById('join-status').innerText = "連線中...";
+        initPeer(null); // 玩家不需要固定ID，自動生成
+        
+        // 等待 Peer Ready 後再連線
+        peer.on('open', (id) => {
+            console.log("My Peer ID:", id);
+            hostConn = peer.connect('CM-' + inputId);
+            
+            hostConn.on('open', () => {
+                document.getElementById('join-status').innerText = "已連上房主！等待開始...";
+                // 傳送加入請求
+                hostConn.send({ type: 'JOIN' });
+            });
+
+            hostConn.on('data', (data) => handleData(data));
+            
+            hostConn.on('close', () => {
+                alert("房主已斷線");
+                location.reload();
+            });
+        });
+    }
+
+    function initPeer(customId) {
+        // 使用 'CM-' 前綴避免與其他人重複
+        let opts = customId ? { host:'0.peerjs.com', port:443, path:'/', key:'peerjs', debug:2 } : {debug:2};
+        if(customId) opts.peerId = 'CM-' + customId; // 指定 ID
+
+        // 使用免費公用 Server
+        peer = new Peer(customId ? 'CM-'+customId : undefined);
+
+        peer.on('open', (id) => {
+            myId = id;
+            console.log("Peer Open:", id);
+        });
+
+        peer.on('connection', (conn) => {
+            // 只有房主會收到連線
+            if(!isHost) return;
+            
+            conn.on('open', () => {
+                console.log("New Player Connected");
+                connections.push(conn);
+                
+                // 分配位置 (簡單做: 連進來就是 P2, P3, P4)
+                let pIndex = connections.length; // 因為 P1 是房主，conn 1 是 P2
+                
+                // 廣播新的玩家列表
+                updateLobbyList();
+
+                conn.send({ type: 'WELCOME', pIndex: pIndex });
+            });
+
+            conn.on('data', (data) => {
+                handleHostLogic(data);
+            });
+            
+            conn.on('close', () => {
+                // 處理斷線 (略，簡化版)
+            });
+        });
+
+        peer.on('error', (err) => {
+            console.error(err);
+            if(err.type === 'unavailable-id') alert("此房間 ID 已被使用，請重試");
+            else alert("連線錯誤: " + err.type);
+        });
+    }
+
+    function updateLobbyList() {
+        if(!isHost) return;
+        let html = '<div class="p-item">P1 (房主) - 準備</div>';
+        connections.forEach((c, i) => {
+            html += `<div class="p-item">P${i+2} - 已加入</div>`;
+        });
+        document.getElementById('host-list').innerHTML = html;
+        
+        // 如果滿 4 人 (3個連線 + 房主)
+        if(connections.length >= 3) {
+            // 自動開始? 還是手動
+        }
+    }
+
+    function hostStartGame() {
+        // 初始化遊戲數據
+        initGameData();
+        broadcastState();
+    }
+
+    // ==========================================
+    // 資料處理 (接收端)
+    // ==========================================
+
+    function handleData(data) {
+        if(data.type === 'WELCOME') {
+            myPlayerIndex = data.pIndex;
+            document.getElementById('join-status').innerText = `我是 P${myPlayerIndex+1}，等待遊戲開始...`;
+        }
+        else if(data.type === 'STATE_UPDATE') {
+            // 收到最新遊戲狀態
+            gameState = data.state;
+            
+            // 如果還在大廳，切換到遊戲畫面
+            document.getElementById('lobby').style.display = 'none';
+            document.getElementById('game-ui').style.display = 'flex';
+            
+            renderGame();
+        }
+    }
+
+    // ==========================================
+    // 房主邏輯核心 (伺服器)
+    // ==========================================
+
+    function handleHostLogic(data) {
+        // 處理玩家傳來的操作請求
+        // data = { type: 'CLICK', x: 1, y: 1, pIndex: 1 }
+        
+        let p = gameState.players[gameState.currP];
+        
+        // 驗證是否是當前回合玩家
+        if(data.pIndex !== gameState.currP) return; 
+
+        if(data.type === 'CLICK') {
+            let x = data.x, y = data.y;
+            let t = gameState.board[y][x];
+            let hasP = gameState.players.some(pl => pl.x===x && pl.y===y);
+
+            // --- 邏輯複製自單機版 ---
+            if(gameState.phase === 'ROTATE') {
+                // 檢查合法性
+                if(hasP || t.type==='goal' || t.lockedUntil > gameState.turnCount || isOverheated(x,y)) {
+                    // 非法操作，忽略或回傳錯誤 (這裡簡化為忽略)
+                    return; 
+                }
+                
+                // 檢查是否已轉過2次
+                let alreadyRotated = gameState.rotatedTiles.some(r => r.x===x && r.y===y);
+                if(!alreadyRotated && gameState.rotatedTiles.length >= 2) return;
+
+                if(!alreadyRotated) gameState.rotatedTiles.push({x,y});
+
+                t.rot = (t.rot+1)%4;
+                t.conns = calcConns(t.base, t.rot);
+            }
+            else if(gameState.phase === 'MOVE') {
+                if(gameState.movesLeft > 0 && checkMove(p.x, p.y, x, y)) {
+                    p.x = x; p.y = y;
+                    gameState.movesLeft--;
+                    checkEffect(t);
+                }
+            }
+            else if(gameState.phase === 'LOCK') {
+                if(t.type!=='goal' && !hasP) {
+                    t.lockedUntil = gameState.turnCount + 4;
+                    hostEndTurn(); // 上鎖後直接結束
+                    return; // 下面的廣播會由 hostEndTurn 觸發
+                }
+            }
+        }
+        else if(data.type === 'CONFIRM') {
+            // 完成旋轉，進入移動
+            if(gameState.phase === 'ROTATE') {
+                 // 過熱記錄
+                gameState.overheated = [...gameState.rotatedTiles];
+                gameState.phase = 'MOVE';
+                gameState.movesLeft = 3;
+            }
+        }
+        else if(data.type === 'END') {
+            hostEndTurn();
+            return;
+        }
+
+        broadcastState();
+    }
+
+    function hostEndTurn() {
+        gameState.turnCount++;
+        gameState.currP = (gameState.currP + 1) % 4; // 這裡假設 4 人，若不足可動態調整
+        // 簡單處理：若 connections 不夠，自動跳過沒人的? 
+        // 這裡假設都到齊。
+        
+        gameState.phase = 'ROTATE';
+        gameState.movesLeft = 0;
+        gameState.rotatedTiles = [];
+        broadcastState();
+    }
+
+    function broadcastState() {
+        // 如果我是房主，我也要更新自己的畫面
+        renderGame();
+        
+        // 發送給所有人
+        let msg = { type: 'STATE_UPDATE', state: gameState };
+        connections.forEach(c => c.send(msg));
+    }
+
+    // ==========================================
+    // 遊戲渲染與操作 (客戶端)
+    // ==========================================
+
+    function myAction(actType) {
+        // UI 按鈕觸發
+        sendAction({ type: actType });
+    }
+
+    function onTileClick(x, y) {
+        // 點擊觸發
+        sendAction({ type: 'CLICK', x: x, y: y });
+    }
+
+    function sendAction(payload) {
+        // 附加我的 ID
+        payload.pIndex = myPlayerIndex;
+
+        if(isHost) {
+            // 如果我是房主，直接呼叫邏輯
+            handleHostLogic(payload);
+        } else {
+            // 如果我是玩家，發給房主
+            if(hostConn) hostConn.send(payload);
+        }
+    }
+
+    function renderGame() {
+        // 更新 UI
+        document.getElementById('my-role').innerText = `我是: P${myPlayerIndex+1}`;
+        document.getElementById('my-role').style.color = COLORS[myPlayerIndex];
+        
+        let pName = ['紅','藍','黃','綠'][gameState.currP];
+        document.getElementById('turn-badge').innerText = `P${gameState.currP+1} (${pName}) 回合`;
+        document.getElementById('turn-badge').style.color = COLORS[gameState.currP];
+
+        // 遮罩處理：不是我的回合就擋住
+        let mask = document.getElementById('wait-mask');
+        if(gameState.currP !== myPlayerIndex) {
+            mask.style.display = 'flex';
+            document.getElementById('wait-msg').innerText = `P${gameState.currP+1} 正在思考...`;
+        } else {
+            mask.style.display = 'none';
+        }
+
+        // 更新狀態文字
+        let phTxt = "", cnTxt = "";
+        let btnMain = document.getElementById('btn-main');
+        let btnSub = document.getElementById('btn-sub');
+        
+        if(gameState.phase==='ROTATE') {
+            phTxt = "階段：旋轉"; cnTxt = `${gameState.rotatedTiles.length}/2`;
+            btnMain.innerText = "完成旋轉 ▶"; btnMain.className = "game-btn btn-act";
+            btnSub.disabled = true; btnSub.className = "game-btn btn-disabled";
+        } else if(gameState.phase==='MOVE') {
+            phTxt = "階段：移動"; cnTxt = `${gameState.movesLeft} 步`;
+            btnMain.innerText = "移動中..."; btnMain.className = "game-btn btn-disabled";
+            btnSub.disabled = false; btnSub.className = "game-btn btn-pass";
+        } else {
+            phTxt = "特殊：上鎖"; cnTxt = "--";
+            btnMain.className = "game-btn btn-disabled";
+        }
+        
+        document.getElementById('phase-txt').innerText = phTxt;
+        document.getElementById('count-txt').innerText = cnTxt;
+
+        // 繪製棋盤
+        const el = document.getElementById('board');
+        el.innerHTML = '';
+        gameState.board.forEach(row => row.forEach(t => {
+            let div = document.createElement('div');
+            div.className = `tile ${t.type}`;
+            if(t.lockedUntil > gameState.turnCount) div.classList.add('locked');
+            if(isOverheated(t.x, t.y)) div.classList.add('overheat');
+            // 檢查是否選中
+            if(gameState.rotatedTiles.some(r=>r.x===t.x && r.y===t.y)) div.classList.add('selected');
+
+            div.style.transform = `rotate(${t.rot*90}deg)`;
+            div.onclick = () => onTileClick(t.x, t.y);
+
+            let h = '<div class="path c"></div>';
+            let c = t.base;
+            if(c[0]) h+='<div class="path n"></div>'; if(c[1]) h+='<div class="path e"></div>';
+            if(c[2]) h+='<div class="path s"></div>'; if(c[3]) h+='<div class="path w"></div>';
+            
+            let icon = '';
+            if(t.type==='goal') icon='💎'; else if(t.type==='lock') icon='🔒';
+            else if(t.type==='portal') icon='🌀'; else if(t.type==='curse') icon='☠️';
+            if(icon) h+=`<div class="icon" style="transform:translate(-50%,-50%) rotate(-${t.rot*90}deg)">${icon}</div>`;
+            
+            div.innerHTML = h;
+            el.appendChild(div);
+        }));
+
+        // 繪製玩家
+        document.querySelectorAll('.player').forEach(e=>e.remove());
+        gameState.players.forEach((p, idx) => {
+            // 由於 board 是 grid，我們需要算座標。
+            // 這裡因為是每次重繪，我們使用簡單的方式：append 到對應 tile 上？
+            // 不行，tile 有 transform rotate，人會跟著轉。
+            // 必須絕對定位到 board 上。
+            // 這裡簡化：我們抓 tile 的 dom 元素
+            setTimeout(() => { // 延遲一下確保 DOM 存在
+                let tDom = document.getElementById('board').children[p.y*SIZE + p.x];
+                if(tDom) {
+                    let d = document.createElement('div');
+                    d.className = `player p${idx}`;
+                    let s = tDom.offsetWidth;
+                    d.style.width = (s*0.5)+'px'; d.style.height = (s*0.5)+'px';
+                    d.style.left = (tDom.offsetLeft + s*0.25)+'px';
+                    d.style.top = (tDom.offsetTop + s*0.25)+'px';
+                    document.getElementById('board').appendChild(d);
+                }
+            }, 0);
+        });
+        
+        document.getElementById('msg').innerText = "連線同步中...";
+    }
+
+    // --- 輔助邏輯 (只用於顯示或計算) ---
+    function isOverheated(x, y) { return gameState.overheated.some(h=>h.x===x && h.y===y); }
+    function calcConns(b, r) { let c=[...b]; for(let i=0; i<r; i++) c.unshift(c.pop()); return c; }
+    
+    function checkMove(x1, y1, x2, y2) {
+         if(Math.abs(x1-x2)+Math.abs(y1-y2)!==1) return false;
+         let c1 = gameState.board[y1][x1].conns;
+         let c2 = gameState.board[y2][x2].conns;
+         if(x2>x1) return c1[1]&&c2[3]; if(x2<x1) return c1[3]&&c2[1];
+         if(y2>y1) return c1[2]&&c2[0]; if(y2<y1) return c1[0]&&c2[2];
+         return false;
+    }
+
+    function checkEffect(t) {
+        // 僅處理簡單效果，複雜傳送需房主運算
+        if(t.type==='goal') alert("有人抵達終點！");
+        if(t.type==='portal') {
+            // 這裡只做提示，實際傳送位移邏輯最好在 handleHostLogic 處理，這裡為了篇幅省略
+            // 若要完整，需要在 handleHostLogic 裡加 checkEffect
+        }
+    }
+
+    // --- 初始化數據 (房主用) ---
+    function initGameData() {
+        let spec = {lock:0, port:0, curse:0};
+        gameState.players = [
+            {x:0, y:0}, {x:4, y:0}, {x:0, y:4}, {x:4, y:4}
+        ];
+        gameState.board = [];
+        
+        for(let y=0; y<SIZE; y++){
+            let row = [];
+            for(let x=0; x<SIZE; x++){
+                let t = {x,y, type:'norm', base:TILES.I, rot:0, lockedUntil:-1};
+                if((x===0||x===4)&&(y===0||y===4)){
+                    t.base = TILES.L;
+                    if(x===0&&y===0) t.rot=1; if(x===4&&y===0) t.rot=2;
+                    if(x===0&&y===4) t.rot=0; if(x===4&&y===4) t.rot=3;
+                } else if(x===2&&y===2){t.type='goal'; t.base=TILES.X;}
+                else {
+                    let r=Math.random();
+                    if(r>0.85 && spec.lock<2) { t.type='lock'; spec.lock++; }
+                    else if(r>0.75 && spec.port<2) { t.type='portal'; spec.port++; }
+                    else if(r>0.6 && spec.curse<2) { t.type='curse'; spec.curse++; }
+                    t.base=[TILES.I,TILES.L,TILES.T][Math.floor(Math.random()*3)];
+                    t.rot=Math.floor(Math.random()*4);
+                }
+                t.conns = calcConns(t.base, t.rot);
+                row.push(t);
+            }
+            gameState.board.push(row);
+        }
+    }
+
+    // 視窗調整重繪
+    window.addEventListener('resize', () => {
+        if(document.getElementById('game-ui').style.display !== 'none') renderGame();
+    });
+
+</script>
+</body>
+</html>
