@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>詛咒迷宮：連線修復版</title>
+    <title>詛咒迷宮：連線修復版 (Fixed)</title>
     <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
     <style>
         :root {
@@ -66,7 +66,7 @@
             gap: 2px; padding: 4px; background: var(--board); border-radius: 8px;
             box-shadow: 0 5px 15px rgba(0,0,0,0.5);
         }
-        .tile { position: relative; background: var(--tile); border-radius: 4px; transition: transform 0.2s; }
+        .tile { position: relative; background: var(--tile); border-radius: 4px; transition: transform 0.2s; cursor: pointer; }
         .tile.selected { box-shadow: 0 0 0 3px #89b4fa; z-index: 5; background: #45475a; }
         .tile.overheat { border: 2px dashed #fab387; opacity: 0.5; }
         .tile.locked { border: 2px solid #f38ba8; }
@@ -105,7 +105,7 @@
 
 <div id="lobby">
     <div class="lobby-box" id="lobby-start">
-        <h1>詛咒迷宮<br><small style="font-size:1rem; color:#aaa;">手機連線版</small></h1>
+        <h1>詛咒迷宮<br><small style="font-size:1rem; color:#aaa;">手機連線修復版</small></h1>
         <button class="btn-lobby btn-create" onclick="createRoom()">🏠 我是房主 (創建)</button>
         <button class="btn-lobby btn-join" onclick="showJoin()">🔗 我是玩家 (加入)</button>
     </div>
@@ -169,9 +169,9 @@
     let connections = []; // 房主存連線
     let hostConn = null;  // 玩家存房主
     let isHost = false;
-    let myPlayerIndex = -1;
+    let myPlayerIndex = -1; // -1: 未定, 0: P1(房主), 1: P2...
 
-    // 遊戲核心數據 (同步用)
+    // 遊戲核心數據
     let gameState = {
         board: [],
         players: [],
@@ -223,12 +223,11 @@
             
             hostConn.on('open', () => {
                 document.getElementById('join-status').innerText = "已連線！等待房主開始...";
-                // P1是房主，所以連進來的是 P2, P3...
             });
 
             hostConn.on('data', (data) => {
                 if(data.type === 'WELCOME') {
-                    myPlayerIndex = data.idx;
+                    myPlayerIndex = Number(data.idx); // 確保是數字
                     document.getElementById('join-status').innerText = `我是 P${myPlayerIndex+1}，等待開始...`;
                 }
                 else if(data.type === 'STATE_UPDATE') {
@@ -236,7 +235,8 @@
                 }
             });
 
-            hostConn.on('close', ()=>alert("房主斷線"));
+            hostConn.on('close', ()=>alert("房主斷線或房間已關閉"));
+            hostConn.on('error', (err)=>alert("連線錯誤: "+err));
         });
     }
 
@@ -248,7 +248,7 @@
             // 房主接收連線
             conn.on('open', () => {
                 connections.push(conn);
-                let newIdx = connections.length; // 房主0, 第一個連線是1...
+                let newIdx = connections.length; // 房主是0, 第一個連線是1...
                 updateHostLobby();
                 // 告訴玩家他是幾號
                 conn.send({ type:'WELCOME', idx: newIdx });
@@ -258,7 +258,7 @@
         
         peer.on('error', (err) => {
             if(err.type==='unavailable-id') alert("代碼重複請重試");
-            else alert("連線錯誤:"+err.type);
+            else console.error("Peer Error:", err);
         });
     }
 
@@ -275,31 +275,51 @@
     // ===================================
 
     function hostStartGame() {
+        if(!isHost) return;
+        
+        // 強制確認房主身份與索引
+        myPlayerIndex = 0;
+        
         // 1. 初始化數據
         initGameData();
-        // 2. 切換自己的畫面 (關鍵修復！)
+        
+        // 2. 切換畫面
         document.getElementById('lobby').style.display = 'none';
         document.getElementById('game-ui').style.display = 'flex';
-        renderGame();
-        // 3. 廣播給其他人
+        
+        // 3. 初始渲染與廣播
         broadcastState();
     }
 
     function handleHostLogic(data) {
-        // 驗證是否輪到該玩家
-        if(data.pIndex !== gameState.currP) return;
+        // 核心修復：確保比較時類型一致
+        let reqPIndex = Number(data.pIndex);
+        if(isNaN(reqPIndex) || reqPIndex !== gameState.currP) {
+            // console.log(`Ignored action from P${reqPIndex}, expecting P${gameState.currP}`);
+            return;
+        }
 
         let p = gameState.players[gameState.currP];
+        // 安全性檢查
+        if(!p) return;
 
         if(data.type === 'CLICK') {
             let x=data.x, y=data.y;
+            // 防止邊界錯誤
+            if(y < 0 || y >= SIZE || x < 0 || x >= SIZE) return;
+            
             let t = gameState.board[y][x];
             let hasP = gameState.players.some(pl=>pl.x===x && pl.y===y);
 
             if(gameState.phase==='ROTATE') {
-                // 限制檢查
-                if(hasP || t.type==='goal' || t.lockedUntil>gameState.turnCount) return; // 鎖定
-                if(isOverheated(x,y)) return; // 過熱
+                // 規則檢查
+                if(hasP) {
+                     // 點自己腳下沒反應是正常的，但可以給個提示（僅房主可見 console）
+                     // console.log("Cannot rotate own tile");
+                     return;
+                }
+                if(t.type==='goal' || t.lockedUntil > gameState.turnCount) return; 
+                if(isOverheated(x,y)) return; 
 
                 // 檢查是否已轉過且點別的
                 let rotated = gameState.rotatedTiles.some(r=>r.x===x&&r.y===y);
@@ -311,10 +331,12 @@
                 t.conns = calcConns(t.base, t.rot);
             }
             else if(gameState.phase==='MOVE') {
+                // 移動邏輯
                 if(gameState.movesLeft>0 && checkMove(p.x, p.y, x, y)) {
                     p.x=x; p.y=y;
                     gameState.movesLeft--;
                     checkEffect(t);
+                    // 這裡不 return，繼續執行下面的 broadcast
                 }
             }
             else if(gameState.phase==='LOCK') {
@@ -343,10 +365,13 @@
 
     function hostEndTurn() {
         gameState.turnCount++;
-        gameState.currP = (gameState.currP+1) % 4; // 輪替
+        // 簡單輪替：0->1->2->3->0
+        gameState.currP = (gameState.currP+1) % 4; 
+        
         gameState.phase = 'ROTATE';
         gameState.movesLeft = 0;
         gameState.rotatedTiles = [];
+        
         broadcastState();
     }
 
@@ -355,7 +380,9 @@
         renderGame();
         // 發送給所有人
         let msg = { type:'STATE_UPDATE', state: gameState };
-        connections.forEach(c => c.send(msg));
+        connections.forEach(c => {
+            if(c && c.open) c.send(msg);
+        });
     }
 
     // ===================================
@@ -364,7 +391,7 @@
 
     function applyState(newState) {
         gameState = newState;
-        // 收到狀態代表遊戲開始，強制切換 UI
+        // 確保收到狀態後隱藏大廳
         document.getElementById('lobby').style.display = 'none';
         document.getElementById('game-ui').style.display = 'flex';
         renderGame();
@@ -374,18 +401,19 @@
         // 1. 頂部資訊
         let roleSpan = document.getElementById('my-role');
         roleSpan.innerText = `我是: P${myPlayerIndex+1}`;
-        roleSpan.style.color = COLORS[myPlayerIndex];
+        roleSpan.style.color = COLORS[myPlayerIndex] || '#fff';
 
         let turnSpan = document.getElementById('turn-badge');
         let currP = gameState.currP;
-        turnSpan.innerText = `${NAMES[currP]} 回合`;
-        turnSpan.style.background = COLORS[currP];
+        turnSpan.innerText = `${NAMES[currP] || '未知'} 回合`;
+        turnSpan.style.background = COLORS[currP] || '#777';
         turnSpan.style.color = '#111';
 
-        // 2. 遮罩控制 (不是我的回合就擋住)
+        // 2. 遮罩控制 (核心修復：確保數值比較正確)
         let mask = document.getElementById('wait-mask');
         let waitMsg = document.getElementById('wait-msg');
-        if(currP !== myPlayerIndex) {
+        
+        if(Number(currP) !== Number(myPlayerIndex)) {
             mask.style.display = 'flex';
             waitMsg.innerText = `等待 ${NAMES[currP]} 行動...`;
         } else {
@@ -399,6 +427,10 @@
         let btnSub = document.getElementById('btn-sub');
         let msg = document.getElementById('msg');
 
+        // 重置按鈕狀態
+        btnMain.onclick = () => myAction('CONFIRM');
+        btnSub.onclick = () => myAction('END');
+
         if(gameState.phase==='ROTATE') {
             phTxt.innerText = "階段: 旋轉";
             cnTxt.innerText = `${gameState.rotatedTiles.length}/2`;
@@ -408,7 +440,7 @@
             btnSub.innerText = "結束回合";
             btnSub.className = "game-btn btn-disabled";
             btnSub.disabled = true;
-            msg.innerText = "點擊板塊旋轉 (最多2個)";
+            msg.innerText = "點擊板塊旋轉 (不可轉自己腳下)";
         } else if(gameState.phase==='MOVE') {
             phTxt.innerText = "階段: 移動";
             cnTxt.innerText = `${gameState.movesLeft} 步`;
@@ -417,7 +449,7 @@
             btnMain.disabled = true;
             btnSub.className = "game-btn btn-pass";
             btnSub.disabled = false;
-            msg.innerText = "點擊相鄰格子移動";
+            msg.innerText = "點擊相鄰路徑移動";
         } else { // LOCK
             phTxt.innerText = "特殊: 上鎖";
             cnTxt.innerText = "--";
@@ -428,66 +460,72 @@
         // 4. 繪製棋盤
         const el = document.getElementById('board');
         el.innerHTML = '';
-        gameState.board.forEach(row => row.forEach(t => {
-            let div = document.createElement('div');
-            div.className = `tile ${t.type}`;
-            if(t.lockedUntil > gameState.turnCount) div.classList.add('locked');
-            if(isOverheated(t.x, t.y)) div.classList.add('overheat');
-            // 標示選中
-            if(gameState.rotatedTiles.some(r=>r.x===t.x&&r.y===t.y)) div.classList.add('selected');
+        if(gameState.board && gameState.board.length > 0) {
+            gameState.board.forEach(row => row.forEach(t => {
+                let div = document.createElement('div');
+                div.className = `tile ${t.type}`;
+                if(t.lockedUntil > gameState.turnCount) div.classList.add('locked');
+                if(isOverheated(t.x, t.y)) div.classList.add('overheat');
+                if(gameState.rotatedTiles.some(r=>r.x===t.x&&r.y===t.y)) div.classList.add('selected');
 
-            div.style.transform = `rotate(${t.rot*90}deg)`;
-            div.onclick = () => sendAction('CLICK', {x:t.x, y:t.y});
+                div.style.transform = `rotate(${t.rot*90}deg)`;
+                // 綁定點擊事件
+                div.onclick = (e) => {
+                    e.stopPropagation(); // 防止事件冒泡
+                    myAction('CLICK', {x:t.x, y:t.y});
+                };
 
-            // 畫路
-            let h = '<div class="path c"></div>';
-            let c = t.base;
-            if(c[0]) h+='<div class="path n"></div>'; if(c[1]) h+='<div class="path e"></div>';
-            if(c[2]) h+='<div class="path s"></div>'; if(c[3]) h+='<div class="path w"></div>';
-            
-            // Icon
-            let icon = '';
-            if(t.type==='goal') icon='💎'; else if(t.type==='lock') icon='🔒';
-            else if(t.type==='portal') icon='🌀'; else if(t.type==='curse') icon='☠️';
-            if(icon) h+=`<div class="icon" style="transform:translate(-50%,-50%) rotate(-${t.rot*90}deg)">${icon}</div>`;
-            
-            div.innerHTML = h;
-            el.appendChild(div);
-        }));
+                let h = '<div class="path c"></div>';
+                let c = t.base;
+                if(c[0]) h+='<div class="path n"></div>'; if(c[1]) h+='<div class="path e"></div>';
+                if(c[2]) h+='<div class="path s"></div>'; if(c[3]) h+='<div class="path w"></div>';
+                
+                let icon = '';
+                if(t.type==='goal') icon='💎'; else if(t.type==='lock') icon='🔒';
+                else if(t.type==='portal') icon='🌀'; else if(t.type==='curse') icon='☠️';
+                if(icon) h+=`<div class="icon" style="transform:translate(-50%,-50%) rotate(-${t.rot*90}deg)">${icon}</div>`;
+                
+                div.innerHTML = h;
+                el.appendChild(div);
+            }));
+        }
 
         // 5. 繪製玩家
-        setTimeout(()=>{
+        // 使用 requestAnimationFrame 替代 setTimeout 確保 DOM 已更新
+        requestAnimationFrame(()=>{
             document.querySelectorAll('.player').forEach(e=>e.remove());
             gameState.players.forEach((p, idx)=>{
-                // 找出對應格子DOM算位置
                 let tiles = document.querySelectorAll('.tile');
-                let targetTile = tiles[p.y*SIZE + p.x];
-                if(targetTile) {
-                    let d = document.createElement('div');
-                    d.className = `player p${idx}`;
-                    let s = targetTile.offsetWidth;
-                    d.style.width = (s*0.5)+'px'; d.style.height = (s*0.5)+'px';
-                    d.style.left = (targetTile.offsetLeft + s*0.25)+'px';
-                    d.style.top = (targetTile.offsetTop + s*0.25)+'px';
-                    // 若是當前玩家，加個光圈
-                    if(idx === gameState.currP) d.style.boxShadow = "0 0 15px white";
-                    el.appendChild(d);
+                // 安全檢查
+                if(p.y*SIZE + p.x < tiles.length) {
+                    let targetTile = tiles[p.y*SIZE + p.x];
+                    if(targetTile) {
+                        let d = document.createElement('div');
+                        d.className = `player p${idx}`;
+                        let s = targetTile.offsetWidth;
+                        d.style.width = (s*0.5)+'px'; d.style.height = (s*0.5)+'px';
+                        d.style.left = (targetTile.offsetLeft + s*0.25)+'px';
+                        d.style.top = (targetTile.offsetTop + s*0.25)+'px';
+                        if(idx === gameState.currP) d.style.boxShadow = "0 0 15px white";
+                        el.appendChild(d);
+                    }
                 }
             });
-        }, 10);
+        });
     }
 
-    function myAction(type) {
-        sendAction(type, {});
+    function myAction(type, payload) {
+        if(myPlayerIndex === -1) return; // 未加入
+        sendAction(type, payload);
     }
 
     function sendAction(type, payload) {
         payload = payload || {};
         payload.type = type;
-        payload.pIndex = myPlayerIndex;
+        payload.pIndex = myPlayerIndex; // 加入發送者ID
 
         if(isHost) handleHostLogic(payload);
-        else if(hostConn) hostConn.send(payload);
+        else if(hostConn && hostConn.open) hostConn.send(payload);
     }
 
     // --- 輔助函式 ---
@@ -496,6 +534,9 @@
     
     function checkMove(x1, y1, x2, y2) {
          if(Math.abs(x1-x2)+Math.abs(y1-y2)!==1) return false;
+         // 防止越界讀取
+         if(!gameState.board[y1] || !gameState.board[y2]) return false;
+         
          let c1 = gameState.board[y1][x1].conns;
          let c2 = gameState.board[y2][x2].conns;
          if(x2>x1) return c1[1]&&c2[3]; if(x2<x1) return c1[3]&&c2[1];
@@ -504,22 +545,25 @@
     }
 
     function checkEffect(t) {
-        if(t.type==='goal') alert("有人抵達終點！");
+        if(t.type==='goal') { alert("🎉 恭喜！有人抵達終點！"); }
         if(t.type==='curse') {
-            setTimeout(()=>{ gameState.movesLeft=0; broadcastState(); alert("☠️ 詛咒：止步！"); },200);
+            setTimeout(()=>{ gameState.movesLeft=0; broadcastState(); alert("☠️ 詛咒觸發：強制停止！"); },200);
         }
         if(t.type==='lock') {
             gameState.phase = 'LOCK'; broadcastState();
+            alert("🔒 鎖定觸發：請點擊一個板塊將其鎖定");
         }
         if(t.type==='portal') {
-             // 隨機傳送
              setTimeout(()=>{
                  let tx=Math.floor(Math.random()*SIZE), ty=Math.floor(Math.random()*SIZE);
-                 if(gameState.board[ty][tx].type!=='goal') {
-                     gameState.players[gameState.currP].x = tx;
-                     gameState.players[gameState.currP].y = ty;
-                     broadcastState();
+                 // 避免傳送到終點
+                 while(gameState.board[ty][tx].type==='goal') {
+                     tx=Math.floor(Math.random()*SIZE); ty=Math.floor(Math.random()*SIZE);
                  }
+                 gameState.players[gameState.currP].x = tx;
+                 gameState.players[gameState.currP].y = ty;
+                 broadcastState();
+                 alert("🌀 傳送門！你被隨機傳送了！");
              }, 200);
         }
     }
@@ -549,7 +593,7 @@
             }
             gameState.board.push(row);
         }
-        // 初始化4人位置 (寫死4人，不管實際連線數，方便測試)
+        // 初始化4人位置 (P1:0,0 | P2:4,0 | P3:0,4 | P4:4,4)
         gameState.players = [{x:0, y:0}, {x:4, y:0}, {x:0, y:4}, {x:4, y:4}];
         gameState.currP = 0;
         gameState.phase = 'ROTATE';
