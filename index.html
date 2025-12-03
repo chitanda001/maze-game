@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>詛咒迷宮：連線修復版 (Fixed)</title>
+    <title>詛咒迷宮：終極修復版</title>
     <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
     <style>
         :root {
@@ -23,6 +23,7 @@
             background: #1e1e2e; z-index: 999;
             display: flex; flex-direction: column; align-items: center; justify-content: center;
             padding: 20px; text-align: center;
+            box-sizing: border-box;
         }
         .lobby-box {
             background: #313244; padding: 30px; border-radius: 15px; width: 90%; max-width: 400px;
@@ -32,7 +33,7 @@
         input {
             width: 100%; padding: 15px; font-size: 1.5rem; text-align: center; letter-spacing: 5px;
             margin-bottom: 15px; border-radius: 8px; border: none; text-transform: uppercase;
-            background: #181825; color: white; outline: none;
+            background: #181825; color: white; outline: none; box-sizing: border-box;
         }
         .btn-lobby {
             width: 100%; padding: 15px; font-size: 1.1rem; border: none; border-radius: 8px;
@@ -48,7 +49,7 @@
         /* --- 遊戲樣式 --- */
         #game-ui { display: none; flex-direction: column; height: 100%; position: relative; }
         
-        /* 遮罩 */
+        /* 遮罩 (等待與結算) */
         #wait-mask {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
             background: rgba(0,0,0,0.85); z-index: 900;
@@ -56,16 +57,41 @@
             color: white; font-size: 1.5rem; font-weight: bold; flex-direction: column;
             text-align: center;
         }
+        
+        /* 勝利畫面 */
+        #win-screen {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9); z-index: 950;
+            display: none; flex-direction: column; align-items: center; justify-content: center;
+            text-align: center; color: #f9e2af;
+        }
+        #win-msg { font-size: 2.5rem; margin-bottom: 20px; animation: pop 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+        @keyframes pop { 0%{transform:scale(0);} 100%{transform:scale(1);} }
 
-        header { padding: 12px; background: rgba(0,0,0,0.4); display: flex; justify-content: space-between; align-items: center;}
-        .game-area { flex: 1; display: flex; align-items: center; justify-content: center; }
+        header { padding: 10px 15px; background: rgba(0,0,0,0.4); display: flex; justify-content: space-between; align-items: center; height: 50px; flex-shrink: 0; }
+        
+        /* --- RWD 核心調整區 --- */
+        .game-area { 
+            flex: 1; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            overflow: hidden; 
+            padding: 10px;
+        }
         
         .board {
-            display: grid; width: 94vw; height: 94vw; max-width: 500px; max-height: 500px;
-            grid-template-columns: repeat(5, 1fr); grid-template-rows: repeat(5, 1fr);
+            display: grid;
+            /* 讓棋盤永遠保持正方形，且適應寬度或高度，避免超出畫面 */
+            width: min(92vw, 55vh);
+            height: min(92vw, 55vh);
+            grid-template-columns: repeat(5, 1fr); 
+            grid-template-rows: repeat(5, 1fr);
             gap: 2px; padding: 4px; background: var(--board); border-radius: 8px;
             box-shadow: 0 5px 15px rgba(0,0,0,0.5);
         }
+        /* --------------------- */
+
         .tile { position: relative; background: var(--tile); border-radius: 4px; transition: transform 0.2s; cursor: pointer; }
         .tile.selected { box-shadow: 0 0 0 3px #89b4fa; z-index: 5; background: #45475a; }
         .tile.overheat { border: 2px dashed #fab387; opacity: 0.5; }
@@ -87,10 +113,20 @@
         .player { position: absolute; width:16%; height:16%; border-radius:50%; z-index:20; border:2px solid #fff; transition:all 0.3s; pointer-events:none; }
         .p0{background:var(--p1);} .p1{background:var(--p2);} .p2{background:var(--p3);} .p3{background:var(--p4);}
 
-        .controls { padding: 15px; background: #181825; border-radius: 20px 20px 0 0; display: flex; flex-direction: column; gap: 10px; }
+        /* 底部控制區 RWD 優化 */
+        .controls { 
+            padding: 15px; 
+            background: #181825; 
+            border-radius: 20px 20px 0 0; 
+            display: flex; 
+            flex-direction: column; 
+            gap: 8px; 
+            flex-shrink: 0; /* 防止被擠壓 */
+            padding-bottom: max(15px, env(safe-area-inset-bottom));
+        }
         .status-bar { display: flex; justify-content: space-between; color: #a6adc8; font-size: 0.9rem; }
-        .msg { text-align: center; color: #fab387; min-height: 1.4em; }
-        button.game-btn { width: 100%; padding: 15px; border-radius: 10px; border: none; font-weight: bold; font-size: 1rem; cursor: pointer; transition: 0.1s; }
+        .msg { text-align: center; color: #fab387; min-height: 1.4em; font-size: 0.95rem;}
+        button.game-btn { width: 100%; padding: 12px; border-radius: 10px; border: none; font-weight: bold; font-size: 1rem; cursor: pointer; transition: 0.1s; }
         button:active { transform: scale(0.98); }
         .btn-act { background: #a6e3a1; color: #111; }
         .btn-pass { background: #f38ba8; color: #111; }
@@ -133,6 +169,17 @@
     <div id="wait-mask">
         <div style="font-size:3rem; margin-bottom:10px;">⏳</div>
         <div id="wait-msg">等待對手...</div>
+    </div>
+
+    <div id="win-screen">
+        <div style="font-size:4rem;">🏆</div>
+        <div id="win-msg">P1 獲勝！</div>
+        <div id="host-controls" style="display:none; width: 80%; max-width: 300px;">
+            <button class="btn-lobby btn-create" onclick="myAction('RESTART')">🔄 重新開始</button>
+        </div>
+        <div id="client-wait-restart" style="display:none; color:#aaa; font-size:0.9rem;">
+            等待房主重新開始...
+        </div>
     </div>
 
     <header>
@@ -180,7 +227,8 @@
         movesLeft: 0,
         rotatedTiles: [],
         overheated: [],
-        turnCount: 0
+        turnCount: 0,
+        winner: null // 新增：勝利者
     };
 
     // ===================================
@@ -276,54 +324,44 @@
 
     function hostStartGame() {
         if(!isHost) return;
-        
-        // 強制確認房主身份與索引
         myPlayerIndex = 0;
-        
-        // 1. 初始化數據
         initGameData();
         
-        // 2. 切換畫面
         document.getElementById('lobby').style.display = 'none';
         document.getElementById('game-ui').style.display = 'flex';
         
-        // 3. 初始渲染與廣播
         broadcastState();
     }
 
     function handleHostLogic(data) {
-        // 核心修復：確保比較時類型一致
-        let reqPIndex = Number(data.pIndex);
-        if(isNaN(reqPIndex) || reqPIndex !== gameState.currP) {
-            // console.log(`Ignored action from P${reqPIndex}, expecting P${gameState.currP}`);
+        // 如果是重啟指令
+        if(data.type === 'RESTART' && isHost) {
+            hostStartGame();
             return;
         }
 
+        // 如果遊戲已結束，只接受重啟
+        if(gameState.winner !== null) return;
+
+        let reqPIndex = Number(data.pIndex);
+        if(isNaN(reqPIndex) || reqPIndex !== gameState.currP) return;
+
         let p = gameState.players[gameState.currP];
-        // 安全性檢查
         if(!p) return;
 
         if(data.type === 'CLICK') {
             let x=data.x, y=data.y;
-            // 防止邊界錯誤
             if(y < 0 || y >= SIZE || x < 0 || x >= SIZE) return;
             
             let t = gameState.board[y][x];
             let hasP = gameState.players.some(pl=>pl.x===x && pl.y===y);
 
             if(gameState.phase==='ROTATE') {
-                // 規則檢查
-                if(hasP) {
-                     // 點自己腳下沒反應是正常的，但可以給個提示（僅房主可見 console）
-                     // console.log("Cannot rotate own tile");
-                     return;
-                }
-                if(t.type==='goal' || t.lockedUntil > gameState.turnCount) return; 
+                if(hasP || t.type==='goal' || t.lockedUntil > gameState.turnCount) return; 
                 if(isOverheated(x,y)) return; 
 
-                // 檢查是否已轉過且點別的
                 let rotated = gameState.rotatedTiles.some(r=>r.x===x&&r.y===y);
-                if(!rotated && gameState.rotatedTiles.length>=2) return; // 上限2
+                if(!rotated && gameState.rotatedTiles.length>=2) return; 
 
                 if(!rotated) gameState.rotatedTiles.push({x,y});
                 
@@ -331,12 +369,11 @@
                 t.conns = calcConns(t.base, t.rot);
             }
             else if(gameState.phase==='MOVE') {
-                // 移動邏輯
                 if(gameState.movesLeft>0 && checkMove(p.x, p.y, x, y)) {
                     p.x=x; p.y=y;
                     gameState.movesLeft--;
                     checkEffect(t);
-                    // 這裡不 return，繼續執行下面的 broadcast
+                    // 這裡繼續執行廣播，因為checkEffect可能改變遊戲狀態
                 }
             }
             else if(gameState.phase==='LOCK') {
@@ -349,10 +386,10 @@
         }
         else if(data.type==='CONFIRM') {
             if(gameState.phase==='ROTATE') {
-                // 進入移動，設定過熱
                 gameState.overheated = [...gameState.rotatedTiles];
                 gameState.phase = 'MOVE';
-                gameState.movesLeft = 3;
+                // --- 修復點：移動步數改為 1 ---
+                gameState.movesLeft = 1; 
             }
         }
         else if(data.type==='END') {
@@ -364,21 +401,17 @@
     }
 
     function hostEndTurn() {
+        if(gameState.winner !== null) return;
         gameState.turnCount++;
-        // 簡單輪替：0->1->2->3->0
         gameState.currP = (gameState.currP+1) % 4; 
-        
         gameState.phase = 'ROTATE';
         gameState.movesLeft = 0;
         gameState.rotatedTiles = [];
-        
         broadcastState();
     }
 
     function broadcastState() {
-        // 更新房主自己
         renderGame();
-        // 發送給所有人
         let msg = { type:'STATE_UPDATE', state: gameState };
         connections.forEach(c => {
             if(c && c.open) c.send(msg);
@@ -391,7 +424,6 @@
 
     function applyState(newState) {
         gameState = newState;
-        // 確保收到狀態後隱藏大廳
         document.getElementById('lobby').style.display = 'none';
         document.getElementById('game-ui').style.display = 'flex';
         renderGame();
@@ -409,15 +441,34 @@
         turnSpan.style.background = COLORS[currP] || '#777';
         turnSpan.style.color = '#111';
 
-        // 2. 遮罩控制 (核心修復：確保數值比較正確)
+        // 2. 處理遊戲結束/等待遮罩
         let mask = document.getElementById('wait-mask');
         let waitMsg = document.getElementById('wait-msg');
+        let winScreen = document.getElementById('win-screen');
         
-        if(Number(currP) !== Number(myPlayerIndex)) {
-            mask.style.display = 'flex';
-            waitMsg.innerText = `等待 ${NAMES[currP]} 行動...`;
-        } else {
+        if(gameState.winner !== null) {
+            // --- 修復點：顯示勝利畫面，停止操作 ---
             mask.style.display = 'none';
+            winScreen.style.display = 'flex';
+            document.getElementById('win-msg').innerText = `${NAMES[gameState.winner]} 獲勝！`;
+            document.getElementById('win-msg').style.color = COLORS[gameState.winner];
+            
+            if(isHost) {
+                document.getElementById('host-controls').style.display = 'block';
+                document.getElementById('client-wait-restart').style.display = 'none';
+            } else {
+                document.getElementById('host-controls').style.display = 'none';
+                document.getElementById('client-wait-restart').style.display = 'block';
+            }
+        } else {
+            winScreen.style.display = 'none';
+            // 正常回合遮罩
+            if(Number(currP) !== Number(myPlayerIndex)) {
+                mask.style.display = 'flex';
+                waitMsg.innerText = `等待 ${NAMES[currP]} 行動...`;
+            } else {
+                mask.style.display = 'none';
+            }
         }
 
         // 3. 下方控制列
@@ -427,7 +478,6 @@
         let btnSub = document.getElementById('btn-sub');
         let msg = document.getElementById('msg');
 
-        // 重置按鈕狀態
         btnMain.onclick = () => myAction('CONFIRM');
         btnSub.onclick = () => myAction('END');
 
@@ -450,7 +500,7 @@
             btnSub.className = "game-btn btn-pass";
             btnSub.disabled = false;
             msg.innerText = "點擊相鄰路徑移動";
-        } else { // LOCK
+        } else { 
             phTxt.innerText = "特殊: 上鎖";
             cnTxt.innerText = "--";
             btnMain.className = "game-btn btn-disabled";
@@ -469,9 +519,8 @@
                 if(gameState.rotatedTiles.some(r=>r.x===t.x&&r.y===t.y)) div.classList.add('selected');
 
                 div.style.transform = `rotate(${t.rot*90}deg)`;
-                // 綁定點擊事件
                 div.onclick = (e) => {
-                    e.stopPropagation(); // 防止事件冒泡
+                    e.stopPropagation(); 
                     myAction('CLICK', {x:t.x, y:t.y});
                 };
 
@@ -491,12 +540,10 @@
         }
 
         // 5. 繪製玩家
-        // 使用 requestAnimationFrame 替代 setTimeout 確保 DOM 已更新
         requestAnimationFrame(()=>{
             document.querySelectorAll('.player').forEach(e=>e.remove());
             gameState.players.forEach((p, idx)=>{
                 let tiles = document.querySelectorAll('.tile');
-                // 安全檢查
                 if(p.y*SIZE + p.x < tiles.length) {
                     let targetTile = tiles[p.y*SIZE + p.x];
                     if(targetTile) {
@@ -506,7 +553,7 @@
                         d.style.width = (s*0.5)+'px'; d.style.height = (s*0.5)+'px';
                         d.style.left = (targetTile.offsetLeft + s*0.25)+'px';
                         d.style.top = (targetTile.offsetTop + s*0.25)+'px';
-                        if(idx === gameState.currP) d.style.boxShadow = "0 0 15px white";
+                        if(idx === gameState.currP && gameState.winner === null) d.style.boxShadow = "0 0 15px white";
                         el.appendChild(d);
                     }
                 }
@@ -515,14 +562,14 @@
     }
 
     function myAction(type, payload) {
-        if(myPlayerIndex === -1) return; // 未加入
+        if(myPlayerIndex === -1) return; 
         sendAction(type, payload);
     }
 
     function sendAction(type, payload) {
         payload = payload || {};
         payload.type = type;
-        payload.pIndex = myPlayerIndex; // 加入發送者ID
+        payload.pIndex = myPlayerIndex; 
 
         if(isHost) handleHostLogic(payload);
         else if(hostConn && hostConn.open) hostConn.send(payload);
@@ -534,7 +581,6 @@
     
     function checkMove(x1, y1, x2, y2) {
          if(Math.abs(x1-x2)+Math.abs(y1-y2)!==1) return false;
-         // 防止越界讀取
          if(!gameState.board[y1] || !gameState.board[y2]) return false;
          
          let c1 = gameState.board[y1][x1].conns;
@@ -545,7 +591,12 @@
     }
 
     function checkEffect(t) {
-        if(t.type==='goal') { alert("🎉 恭喜！有人抵達終點！"); }
+        if(t.type==='goal') { 
+            // --- 修復點：設定勝利者 ---
+            gameState.winner = gameState.currP;
+            // 立即停止移動，等待廣播
+            gameState.movesLeft = 0;
+        }
         if(t.type==='curse') {
             setTimeout(()=>{ gameState.movesLeft=0; broadcastState(); alert("☠️ 詛咒觸發：強制停止！"); },200);
         }
@@ -556,7 +607,6 @@
         if(t.type==='portal') {
              setTimeout(()=>{
                  let tx=Math.floor(Math.random()*SIZE), ty=Math.floor(Math.random()*SIZE);
-                 // 避免傳送到終點
                  while(gameState.board[ty][tx].type==='goal') {
                      tx=Math.floor(Math.random()*SIZE); ty=Math.floor(Math.random()*SIZE);
                  }
@@ -593,13 +643,13 @@
             }
             gameState.board.push(row);
         }
-        // 初始化4人位置 (P1:0,0 | P2:4,0 | P3:0,4 | P4:4,4)
         gameState.players = [{x:0, y:0}, {x:4, y:0}, {x:0, y:4}, {x:4, y:4}];
         gameState.currP = 0;
         gameState.phase = 'ROTATE';
         gameState.movesLeft = 0;
         gameState.rotatedTiles = [];
         gameState.turnCount = 0;
+        gameState.winner = null; // 重置勝利者
     }
 
     window.addEventListener('resize', ()=> {
